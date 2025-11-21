@@ -11,6 +11,11 @@ import app.routers.auth as auth
 import app.routers.pessoa as pessoa
 from app.routers import superadmin as superadmin_router 
 from app.routers import admin_users
+from app.routers import contas_pagar
+from app.routers import contas_receber
+from app.routers import relatorios
+from app.routers import cadastro_geral
+from app.routers import licencas
 
 
 app = FastAPI(
@@ -47,7 +52,12 @@ app.include_router(users.router)
 app.include_router(auth.router)
 app.include_router(pessoa.router)
 app.include_router(superadmin_router.router)
-app.include_router(admin_users.router) 
+app.include_router(admin_users.router)
+app.include_router(contas_pagar.router)
+app.include_router(contas_receber.router)
+app.include_router(relatorios.router)
+app.include_router(cadastro_geral.router)
+app.include_router(licencas.router) 
 
 if __name__ == "__main__":
     uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True)

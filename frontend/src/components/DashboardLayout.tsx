@@ -3,6 +3,9 @@ import { Routes, Route, Link, useLocation, Navigate } from "react-router-dom";
 import CadastrosPage from "../pages/CadastrosPage";
 import SuperAdminUsersPage from "../pages/SuperAdminUsersPage";
 import UsuariosPage from "../pages/UsuariosPage";
+import ContasPagarPage from "../pages/ContasPagarPage";
+import ContasReceberPage from "../pages/ContasReceberPage";
+import LicencasPage from "../pages/LicencasPage";
 import api from "../api";
 
 interface DashboardLayoutProps {
@@ -18,7 +21,7 @@ type Me = {
   codfil: number;
 };
 
-const DashboardLayout: React.FC<DashboardLayoutProps> = ({ token, onLogout }) => {
+const DashboardLayout: React.FC<DashboardLayoutProps> = ({ onLogout }) => {
   const location = useLocation();
   const [me, setMe] = React.useState<Me | null>(null);
 
@@ -50,6 +53,26 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ token, onLogout }) =>
           <Link to="/cadastros" className={`block px-4 py-2 rounded-lg ${isActive("/cadastros")}`}>
             Cadastros Gerais
           </Link>
+          
+          {/* Financeiro */}
+          <div className="mt-4 pt-4 border-t border-gray-200">
+            <div className="px-4 py-2 text-xs font-semibold text-gray-500 uppercase">
+              Financeiro
+            </div>
+          </div>
+          <Link to="/contas-pagar" className={`block px-4 py-2 rounded-lg ${isActive("/contas-pagar")}`}>
+            💰 Contas a Pagar
+          </Link>
+          <Link to="/contas-receber" className={`block px-4 py-2 rounded-lg ${isActive("/contas-receber")}`}>
+            💵 Contas a Receber
+          </Link>
+          
+          {/* Outros */}
+          <div className="mt-4 pt-4 border-t border-gray-200">
+            <div className="px-4 py-2 text-xs font-semibold text-gray-500 uppercase">
+              Sistema
+            </div>
+          </div>
           <Link to="/empresas" className={`block px-4 py-2 rounded-lg ${isActive("/empresas")}`}>
             Empresas
           </Link>
@@ -72,7 +95,13 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ token, onLogout }) =>
                 to="/superadmin/users"
                 className={`block px-4 py-2 rounded-lg ${isActive("/superadmin/users")}`}
               >
-                Gestão de Usuários
+                👥 Gestão de Usuários
+              </Link>
+              <Link
+                to="/superadmin/licencas"
+                className={`block px-4 py-2 rounded-lg ${isActive("/superadmin/licencas")}`}
+              >
+                🔑 Gestão de Licenças
               </Link>
             </>
           )}
@@ -104,16 +133,26 @@ const DashboardLayout: React.FC<DashboardLayoutProps> = ({ token, onLogout }) =>
           <Routes>
             <Route path="/" element={<DashboardHome me={me} />} />
             <Route path="/cadastros" element={<CadastrosPage />} />
+            <Route path="/contas-pagar" element={<ContasPagarPage />} />
+            <Route path="/contas-receber" element={<ContasReceberPage />} />
             <Route path="/empresas" element={<EmpresasPage />} />
             <Route path="/notas" element={<NotasPage />} />
             <Route path="/usuarios" element={<UsuariosPage />} />
 
-            {/* Rota SuperAdmin com guard */}
+            {/* Rotas SuperAdmin com guard */}
             <Route
               path="/superadmin/users"
               element={
                 <RequireSuperAdmin me={me}>
                   <SuperAdminUsersPage />
+                </RequireSuperAdmin>
+              }
+            />
+            <Route
+              path="/superadmin/licencas"
+              element={
+                <RequireSuperAdmin me={me}>
+                  <LicencasPage />
                 </RequireSuperAdmin>
               }
             />

@@ -1,550 +1,737 @@
-import React, { useEffect, useMemo, useState } from "react";
-import axios from "axios";
+// src/pages/CadastrosPage.tsx
+import React, { useState, useCallback, useEffect } from "react";
+import api from "../api";
 
-// Ajuste se sua API tiver prefixo /api
-const API_BASE = "http://127.0.0.1:8000";
-
-type Pessoa = {
-  codpes: number;     // PK
-  tippes?: "F" | "J";
-  codtre?: number | null;
-  nompes: string;
-  fanpes?: string | null;
-  cpfpes?: string | null;
-  cnppes?: string | null;
-  em1pes?: string | null;
-  em2pes?: string | null;
-  celpes?: string | null;
-  sitpes?: "A" | "I" | null;
-  endpes?: string | null;
-  numpes?: string | null;
-  baipes?: string | null;
-  cidpes?: string | null;
-  estpes?: string | null;
-  ceppes?: string | null;
+// ========== TYPES ==========
+type CadastroGeral = {
+  codcad: number;
+  tipocad: "FORNECEDOR" | "CLIENTE" | "USUARIO" | "OUTRO";
+  nomcad: string;
+  doccad: string | null;
+  emacad: string | null;
+  telcad: string | null;
+  endcad: string | null;
+  obscad: string | null;
+  statcad: "ATIVO" | "INATIVO";
+  created_at: string;
+  updated_at: string;
+  codemp: number;
+  codfil: number;
 };
 
-type FormState = {
-  tippes: "F" | "J";
-  codtre: string;
-  nompes: string;
-  fanpes: string;
-  cpfpes: string;
-  cnppes: string;
-  em1pes: string;
-  em2pes: string;
-  celpes: string;
-  sitpes: string; // "Ativo" | "Inativo" | "" (UI), convertemos para "A"/"I" no payload
-  endpes: string;
-  numpes: string;
-  baipes: string;
-  cidpes: string;
-  estpes: string;
-  ceppes: string;
+type CreateForm = {
+  tipocad: string;
+  nomcad: string;
+  doccad: string;
+  emacad: string;
+  telcad: string;
+  endcad: string;
+  obscad: string;
+  statcad: string;
 };
 
-const initialForm: FormState = {
-  tippes: "F",
-  codtre: "",
-  nompes: "",
-  fanpes: "",
-  cpfpes: "",
-  cnppes: "",
-  em1pes: "",
-  em2pes: "",
-  celpes: "",
-  sitpes: "",
-  endpes: "",
-  numpes: "",
-  baipes: "",
-  cidpes: "",
-  estpes: "",
-  ceppes: "",
+type CountByType = {
+  tipocad: string;
+  count: number;
 };
 
-const toNull = (v: string) => (v?.trim() === "" ? null : v.trim());
-
-const mapSituacaoOut = (v?: string | null) => {
-  if (!v) return null;
-  const up = v.toUpperCase();
-  if (up === "ATIVO") return "A";
-  if (up === "INATIVO") return "I";
-  if (["A", "I"].includes(up)) return up as "A" | "I";
-  return null;
+// ========== HELPER FUNCTIONS ==========
+const getTipoLabel = (tipo: string): string => {
+  const labels: Record<string, string> = {
+    FORNECEDOR: "Fornecedor",
+    CLIENTE: "Cliente",
+    USUARIO: "Usuário",
+    OUTRO: "Outro",
+  };
+  return labels[tipo] || tipo;
 };
 
-const mapSituacaoIn = (v?: string | null) => {
-  if (!v) return "";
-  const up = v.toUpperCase();
-  if (up === "A") return "Ativo";
-  if (up === "I") return "Inativo";
-  return "";
+const getTipoColor = (tipo: string): string => {
+  const colors: Record<string, string> = {
+    FORNECEDOR: "bg-blue-100 text-blue-800 border-blue-300",
+    CLIENTE: "bg-green-100 text-green-800 border-green-300",
+    USUARIO: "bg-purple-100 text-purple-800 border-purple-300",
+    OUTRO: "bg-gray-100 text-gray-800 border-gray-300",
+  };
+  return colors[tipo] || "bg-gray-100 text-gray-800";
 };
 
-const labelTipo = (t?: string | null) => (t === "J" ? "Jurídica" : "Física");
-
-const labelDoc = (p: Pessoa) => (p.tippes === "J" ? p.cnppes || "-" : p.cpfpes || "-");
-
-const labelSituacao = (s?: string | null) => (s === "A" ? "Ativo" : s === "I" ? "Inativo" : "-");
-
-// Axios com token do localStorage
-const axiosWithAuth = () => {
-  const token = localStorage.getItem("token");
-  const instance = axios.create({
-    baseURL: API_BASE,
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
-  return instance;
+const getStatusLabel = (status: string): string => {
+  const labels: Record<string, string> = {
+    ATIVO: "Ativo",
+    INATIVO: "Inativo",
+  };
+  return labels[status] || status;
 };
 
-const CadastrosPage: React.FC = () => {
-  const [pessoas, setPessoas] = useState<Pessoa[]>([]);
+const getStatusColor = (status: string): string => {
+  const colors: Record<string, string> = {
+    ATIVO: "bg-green-100 text-green-800 border-green-300",
+    INATIVO: "bg-red-100 text-red-800 border-red-300",
+  };
+  return colors[status] || "bg-gray-100 text-gray-800";
+};
+
+const getErrMsg = (e: any): string => {
+  const d = e?.response?.data;
+  if (!d) return e?.message || "Erro desconhecido";
+  if (typeof d === "string") return d;
+  const det = d.detail;
+  if (!det) return JSON.stringify(d);
+  if (typeof det === "string") return det;
+  if (Array.isArray(det)) {
+    return det.map((it: any) => it?.msg || JSON.stringify(it)).join("; ");
+  }
+  if (typeof det === "object" && det?.msg) return det.msg;
+  try {
+    return JSON.stringify(det);
+  } catch {
+    return "Erro de validação";
+  }
+};
+
+// ========== COMPONENT ==========
+export default function CadastrosPage() {
+  const [cadastros, setCadastros] = useState<CadastroGeral[]>([]);
+  const [countByType, setCountByType] = useState<CountByType[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
+  const [success, setSuccess] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
-  const [editingId, setEditingId] = useState<number | null>(null);
+  const [selectedCadastro, setSelectedCadastro] = useState<CadastroGeral | null>(null);
 
-  const [form, setForm] = useState<FormState>(initialForm);
+  // Filtros e busca
+  const [filterTipo, setFilterTipo] = useState<string>("");
+  const [filterStatus, setFilterStatus] = useState<string>("");
+  const [searchTerm, setSearchTerm] = useState<string>("");
 
-  const client = useMemo(() => axiosWithAuth(), []);
+  // Form de criação/edição
+  const [form, setForm] = useState<CreateForm>({
+    tipocad: "FORNECEDOR",
+    nomcad: "",
+    doccad: "",
+    emacad: "",
+    telcad: "",
+    endcad: "",
+    obscad: "",
+    statcad: "ATIVO",
+  });
 
-  const fetchPessoas = async () => {
+  const ENDPOINT = "/cadastros-gerais";
+
+  // ========== LOAD CADASTROS ==========
+  const loadCadastros = useCallback(async () => {
+    setLoading(true);
+    setError(null);
     try {
-      setLoading(true);
-      setError(null);
-      const resp = await client.get<Pessoa[]>("/pessoas/");
-      setPessoas(resp.data || []);
+      const params: any = {};
+      if (filterTipo) params.tipocad = filterTipo;
+      if (filterStatus) params.statcad = filterStatus;
+
+      const res = await api.get<CadastroGeral[]>(ENDPOINT, { params });
+      setCadastros(res.data || []);
     } catch (e: any) {
       console.error(e);
-      setError(e?.response?.data?.detail || "Erro ao carregar pessoas");
+      setError(getErrMsg(e));
     } finally {
       setLoading(false);
     }
-  };
+  }, [filterTipo, filterStatus]);
 
-  useEffect(() => {
-    fetchPessoas();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // ========== LOAD COUNT BY TYPE ==========
+  const loadCountByType = useCallback(async () => {
+    try {
+      const res = await api.get<CountByType[]>(`${ENDPOINT}/count-by-type`);
+      setCountByType(res.data || []);
+    } catch (e: any) {
+      console.error("Erro ao carregar estatísticas:", e);
+    }
   }, []);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    setForm({ ...form, [e.target.name]: e.target.value });
-  };
+  useEffect(() => {
+    loadCadastros();
+    loadCountByType();
+  }, [loadCadastros, loadCountByType]);
 
-  const resetForm = () => {
-    setForm(initialForm);
-    setIsEditing(false);
-    setEditingId(null);
-  };
+  // ========== FILTERED CADASTROS ==========
+  const filteredCadastros = cadastros.filter((cad) => {
+    if (searchTerm) {
+      const term = searchTerm.toLowerCase();
+      return (
+        cad.nomcad.toLowerCase().includes(term) ||
+        (cad.doccad && cad.doccad.toLowerCase().includes(term))
+      );
+    }
+    return true;
+  });
 
-  const buildPayload = (f: FormState) => {
-    const payload: any = {
-      tippes: f.tippes,
-      codtre: f.codtre ? Number(f.codtre) : null,
-      nompes: f.nompes.trim(),
-      fanpes: toNull(f.fanpes),
-      endpes: toNull(f.endpes),
-      numpes: toNull(f.numpes),
-      baipes: toNull(f.baipes),
-      cidpes: toNull(f.cidpes),
-      estpes: toNull(f.estpes),
-      ceppes: toNull(f.ceppes),
-      em1pes: toNull(f.em1pes),
-      em2pes: toNull(f.em2pes),
-      celpes: toNull(f.celpes),
-      sitpes: mapSituacaoOut(f.sitpes), // A/I
-    };
+  // ========== CREATE ==========
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setSuccess(null);
 
-    if (f.tippes === "F") {
-      payload.cpfpes = toNull(f.cpfpes);
-      payload.cnppes = null;
-    } else {
-      payload.cpfpes = null;
-      payload.cnppes = toNull(f.cnppes);
+    if (!form.nomcad.trim()) {
+      setError("Nome é obrigatório");
+      return;
     }
 
-    return payload;
-  };
-
-  const openCreate = () => {
-    resetForm();
-    setIsEditing(false);
-    setShowModal(true);
-  };
-
-  const openEdit = (p: Pessoa) => {
-    setIsEditing(true);
-    setEditingId(p.codpes);
-    setForm({
-      tippes: (p.tippes as "F" | "J") || "F",
-      codtre: p.codtre != null ? String(p.codtre) : "",
-      nompes: p.nompes || "",
-      fanpes: p.fanpes || "",
-      cpfpes: p.cpfpes || "",
-      cnppes: p.cnppes || "",
-      em1pes: p.em1pes || "",
-      em2pes: p.em2pes || "",
-      celpes: p.celpes || "",
-      sitpes: mapSituacaoIn(p.sitpes), // "Ativo"/"Inativo"
-      endpes: p.endpes || "",
-      numpes: p.numpes || "",
-      baipes: p.baipes || "",
-      cidpes: p.cidpes || "",
-      estpes: p.estpes || "",
-      ceppes: p.ceppes || "",
-    });
-    setShowModal(true);
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const payload = buildPayload(form);
     try {
-      if (isEditing && editingId != null) {
-        await client.put(`/pessoas/${editingId}`, payload);
-      } else {
-        await client.post("/pessoas/", payload);
-      }
+      await api.post(ENDPOINT, {
+        tipocad: form.tipocad,
+        nomcad: form.nomcad.trim(),
+        doccad: form.doccad.trim() || null,
+        emacad: form.emacad.trim() || null,
+        telcad: form.telcad.trim() || null,
+        endcad: form.endcad.trim() || null,
+        obscad: form.obscad.trim() || null,
+        statcad: form.statcad,
+      });
+
+      setSuccess("Cadastro criado com sucesso!");
       setShowModal(false);
       resetForm();
-      await fetchPessoas();
+      await loadCadastros();
+      await loadCountByType();
     } catch (e: any) {
       console.error(e);
-      const msg = e?.response?.data?.detail || JSON.stringify(e?.response?.data || e.message);
-      alert(`Erro ao salvar: ${msg}`);
+      setError(getErrMsg(e));
     }
   };
 
-  const handleDelete = async (codpes: number) => {
-    const ok = confirm("Tem certeza que deseja excluir este cadastro?");
-    if (!ok) return;
+  // ========== UPDATE ==========
+  const handleUpdate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedCadastro) return;
+
+    setError(null);
+    setSuccess(null);
+
     try {
-      await client.delete(`/pessoas/${codpes}`);
-      await fetchPessoas();
+      await api.put(`${ENDPOINT}/${selectedCadastro.codcad}`, {
+        tipocad: form.tipocad,
+        nomcad: form.nomcad.trim(),
+        doccad: form.doccad.trim() || null,
+        emacad: form.emacad.trim() || null,
+        telcad: form.telcad.trim() || null,
+        endcad: form.endcad.trim() || null,
+        obscad: form.obscad.trim() || null,
+        statcad: form.statcad,
+      });
+
+      setSuccess("Cadastro atualizado com sucesso!");
+      setShowModal(false);
+      setIsEditing(false);
+      setSelectedCadastro(null);
+      resetForm();
+      await loadCadastros();
+      await loadCountByType();
     } catch (e: any) {
       console.error(e);
-      const msg = e?.response?.data?.detail || JSON.stringify(e?.response?.data || e.message);
-      alert(`Erro ao excluir: ${msg}`);
+      setError(getErrMsg(e));
     }
   };
 
+  // ========== TOGGLE STATUS ==========
+  const handleToggleStatus = async (cadastro: CadastroGeral) => {
+    const newStatus = cadastro.statcad === "ATIVO" ? "INATIVO" : "ATIVO";
+    const action = newStatus === "INATIVO" ? "inativar" : "ativar";
+
+    if (!confirm(`Deseja realmente ${action} este cadastro?`)) return;
+
+    setError(null);
+    setSuccess(null);
+
+    try {
+      await api.delete(`${ENDPOINT}/${cadastro.codcad}`);
+      setSuccess(`Cadastro ${action === "inativar" ? "inativado" : "ativado"} com sucesso!`);
+      await loadCadastros();
+      await loadCountByType();
+    } catch (e: any) {
+      console.error(e);
+      setError(getErrMsg(e));
+    }
+  };
+
+  // ========== OPEN CREATE MODAL ==========
+  const openCreateModal = () => {
+    resetForm();
+    setIsEditing(false);
+    setSelectedCadastro(null);
+    setShowModal(true);
+  };
+
+  // ========== OPEN EDIT MODAL ==========
+  const openEditModal = (cadastro: CadastroGeral) => {
+    setForm({
+      tipocad: cadastro.tipocad,
+      nomcad: cadastro.nomcad,
+      doccad: cadastro.doccad || "",
+      emacad: cadastro.emacad || "",
+      telcad: cadastro.telcad || "",
+      endcad: cadastro.endcad || "",
+      obscad: cadastro.obscad || "",
+      statcad: cadastro.statcad,
+    });
+    setSelectedCadastro(cadastro);
+    setIsEditing(true);
+    setShowModal(true);
+  };
+
+  // ========== RESET FORM ==========
+  const resetForm = () => {
+    setForm({
+      tipocad: "FORNECEDOR",
+      nomcad: "",
+      doccad: "",
+      emacad: "",
+      telcad: "",
+      endcad: "",
+      obscad: "",
+      statcad: "ATIVO",
+    });
+  };
+
+  // ========== GET COUNT FOR TYPE ==========
+  const getCountForType = (tipo: string): number => {
+    const found = countByType.find((c) => c.tipocad === tipo);
+    return found ? found.count : 0;
+  };
+
+  // ========== RENDER ==========
   return (
-    <div className="bg-white rounded-lg shadow p-6">
-      {/* Header com botão */}
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-2xl font-bold">📑 Cadastros Gerais</h2>
-        <button
-          onClick={openCreate}
-          className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"
-        >
-          + Cadastrar
-        </button>
-      </div>
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-6">
+      <div className="max-w-7xl mx-auto">
+        {/* Header */}
+        <div className="mb-8">
+          <h1 className="text-4xl font-bold text-slate-800 mb-2">
+            📑 Cadastros Gerais
+          </h1>
+          <p className="text-slate-600">
+            Gerencie fornecedores, clientes, usuários e outros cadastros
+          </p>
+        </div>
 
-      {/* Tabela de listagem */}
-      <div className="bg-white border rounded-lg">
-        {loading ? (
-          <div className="p-6 text-gray-500">Carregando...</div>
-        ) : error ? (
-          <div className="p-6 text-red-600">{error}</div>
-        ) : pessoas.length === 0 ? (
-          <div className="p-6 text-gray-500">Nenhum cadastro encontrado.</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Código</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nome</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tipo</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">CPF/CNPJ</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">E-mail</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Celular</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cidade/UF</th>
-                  <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Situação</th>
-                  <th className="px-4 py-2"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200">
-                {pessoas.map((p) => (
-                  <tr key={p.codpes} className="hover:bg-gray-50">
-                    <td className="px-4 py-2 text-sm text-gray-700">{p.codpes}</td>
-                    <td className="px-4 py-2 text-sm text-gray-700">{p.nompes}</td>
-                    <td className="px-4 py-2 text-sm text-gray-700">{labelTipo(p.tippes)}</td>
-                    <td className="px-4 py-2 text-sm text-gray-700">{labelDoc(p)}</td>
-                    <td className="px-4 py-2 text-sm text-gray-700">{p.em1pes || "-"}</td>
-                    <td className="px-4 py-2 text-sm text-gray-700">{p.celpes || "-"}</td>
-                    <td className="px-4 py-2 text-sm text-gray-700">
-                      {p.cidpes || "-"}{p.estpes ? `/${p.estpes}` : ""}
-                    </td>
-                    <td className="px-4 py-2 text-sm">
-                      <span
-                        className={`px-2 py-0.5 rounded text-white ${
-                          p.sitpes === "A" ? "bg-green-600" : p.sitpes === "I" ? "bg-gray-500" : "bg-gray-300"
-                        }`}
-                      >
-                        {labelSituacao(p.sitpes)}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2 text-sm text-right">
-                      <button
-                        onClick={() => openEdit(p)}
-                        className="px-3 py-1 rounded bg-amber-500 text-white hover:bg-amber-600 mr-2"
-                      >
-                        Editar
-                      </button>
-                      <button
-                        onClick={() => handleDelete(p.codpes)}
-                        className="px-3 py-1 rounded bg-red-600 text-white hover:bg-red-700"
-                      >
-                        Excluir
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* Modal de cadastro/edição */}
-      {showModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
-          <div className="bg-white w-full max-w-5xl rounded-lg shadow-lg">
-            {/* Cabeçalho modal */}
-            <div className="p-6 border-b flex items-center justify-between">
-              <h3 className="text-xl font-semibold">
-                {isEditing ? `Editar Cadastro #${editingId}` : "Novo Cadastro"}
-              </h3>
+        {/* Alerts */}
+        {error && (
+          <div className="mb-6 bg-red-50 border-l-4 border-red-500 p-4 rounded-r-lg shadow-sm">
+            <div className="flex items-center">
+              <span className="text-red-700 font-medium">⚠️ {error}</span>
               <button
-                onClick={() => {
-                  setShowModal(false);
-                  resetForm();
-                }}
-                className="text-gray-500 hover:text-gray-700"
+                onClick={() => setError(null)}
+                className="ml-auto text-red-500 hover:text-red-700"
               >
                 ✕
               </button>
             </div>
+          </div>
+        )}
 
-            {/* Form */}
-            <form onSubmit={handleSubmit} className="p-6 space-y-6">
-              {/* 1ª fileira - Dados principais */}
-              <section className="border rounded-lg p-4">
-                <h4 className="font-medium mb-3">Dados Principais</h4>
-                <div className="grid grid-cols-4 gap-4">
-                  <div>
-                    <label className="block text-sm">Tipo Pessoa</label>
-                    <select
-                      name="tippes"
-                      value={form.tippes}
-                      onChange={(e) => {
-                        const val = e.target.value as "F" | "J";
-                        setForm((prev) => ({ ...prev, tippes: val, cpfpes: "", cnppes: "" }));
-                      }}
-                      className="w-full border px-3 py-2 rounded"
+        {success && (
+          <div className="mb-6 bg-green-50 border-l-4 border-green-500 p-4 rounded-r-lg shadow-sm">
+            <div className="flex items-center">
+              <span className="text-green-700 font-medium">✓ {success}</span>
+              <button
+                onClick={() => setSuccess(null)}
+                className="ml-auto text-green-500 hover:text-green-700"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Dashboard - Estatísticas */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+          <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl shadow-lg p-6 text-white">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-blue-100 text-sm font-medium">Fornecedores</p>
+                <p className="text-3xl font-bold mt-1">{getCountForType("FORNECEDOR")}</p>
+              </div>
+              <div className="text-4xl opacity-80">📦</div>
+            </div>
+          </div>
+
+          <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-xl shadow-lg p-6 text-white">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-green-100 text-sm font-medium">Clientes</p>
+                <p className="text-3xl font-bold mt-1">{getCountForType("CLIENTE")}</p>
+              </div>
+              <div className="text-4xl opacity-80">👥</div>
+            </div>
+          </div>
+
+          <div className="bg-gradient-to-br from-purple-500 to-purple-600 rounded-xl shadow-lg p-6 text-white">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-purple-100 text-sm font-medium">Usuários</p>
+                <p className="text-3xl font-bold mt-1">{getCountForType("USUARIO")}</p>
+              </div>
+              <div className="text-4xl opacity-80">👤</div>
+            </div>
+          </div>
+
+          <div className="bg-gradient-to-br from-gray-500 to-gray-600 rounded-xl shadow-lg p-6 text-white">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-gray-100 text-sm font-medium">Outros</p>
+                <p className="text-3xl font-bold mt-1">{getCountForType("OUTRO")}</p>
+              </div>
+              <div className="text-4xl opacity-80">📋</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Filters Bar */}
+        <div className="bg-white rounded-xl shadow-md p-6 mb-6">
+          <div className="flex flex-wrap gap-4 items-center justify-between">
+            <div className="flex gap-3 flex-wrap flex-1">
+              <input
+                type="text"
+                placeholder="🔍 Buscar por nome ou documento..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent flex-1 min-w-[200px]"
+              />
+
+              <select
+                value={filterTipo}
+                onChange={(e) => setFilterTipo(e.target.value)}
+                className="px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              >
+                <option value="">Todos os Tipos</option>
+                <option value="FORNECEDOR">Fornecedor</option>
+                <option value="CLIENTE">Cliente</option>
+                <option value="USUARIO">Usuário</option>
+                <option value="OUTRO">Outro</option>
+              </select>
+
+              <select
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value)}
+                className="px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              >
+                <option value="">Todos os Status</option>
+                <option value="ATIVO">Ativo</option>
+                <option value="INATIVO">Inativo</option>
+              </select>
+
+              <button
+                onClick={() => {
+                  loadCadastros();
+                  loadCountByType();
+                }}
+                className="px-4 py-2 bg-slate-600 text-white rounded-lg hover:bg-slate-700 transition-colors flex items-center gap-2"
+              >
+                🔄 Atualizar
+              </button>
+            </div>
+
+            <button
+              onClick={openCreateModal}
+              className="px-6 py-2 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all shadow-md flex items-center gap-2"
+            >
+              ➕ Novo Cadastro
+            </button>
+          </div>
+        </div>
+
+        {/* Table */}
+        <div className="bg-white rounded-xl shadow-md overflow-hidden">
+          {loading ? (
+            <div className="p-12 text-center text-slate-500">
+              <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+              <p className="mt-4">Carregando...</p>
+            </div>
+          ) : filteredCadastros.length === 0 ? (
+            <div className="p-12 text-center text-slate-500">
+              <p className="text-lg">📭 Nenhum cadastro encontrado</p>
+              <p className="text-sm mt-2">
+                {searchTerm
+                  ? "Tente ajustar os filtros de busca"
+                  : "Crie seu primeiro cadastro"}
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead className="bg-slate-50 border-b-2 border-slate-200">
+                  <tr>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                      ID
+                    </th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                      Nome
+                    </th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                      Tipo
+                    </th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                      Documento
+                    </th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                      E-mail
+                    </th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                      Telefone
+                    </th>
+                    <th className="px-6 py-4 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                      Status
+                    </th>
+                    <th className="px-6 py-4 text-center text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                      Ações
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredCadastros.map((cadastro) => (
+                    <tr
+                      key={cadastro.codcad}
+                      className="hover:bg-slate-50 transition-colors"
                     >
-                      <option value="F">Física</option>
-                      <option value="J">Jurídica</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm">Código Regime</label>
-                    <input
-                      type="number"
-                      name="codtre"
-                      value={form.codtre}
-                      onChange={handleChange}
-                      className="w-full border px-3 py-2 rounded"
-                    />
-                  </div>
-                  <div className="col-span-2">
-                    <label className="block text-sm">Nome *</label>
-                    <input
-                      type="text"
-                      name="nompes"
-                      value={form.nompes}
-                      onChange={handleChange}
-                      className="w-full border px-3 py-2 rounded"
-                      required
-                    />
-                  </div>
-                  {form.tippes === "F" ? (
-                    <div>
-                      <label className="block text-sm">CPF</label>
-                      <input
-                        type="text"
-                        name="cpfpes"
-                        value={form.cpfpes}
-                        onChange={handleChange}
-                        className="w-full border px-3 py-2 rounded"
-                      />
-                    </div>
-                  ) : (
-                    <div>
-                      <label className="block text-sm">CNPJ</label>
-                      <input
-                        type="text"
-                        name="cnppes"
-                        value={form.cnppes}
-                        onChange={handleChange}
-                        className="w-full border px-3 py-2 rounded"
-                      />
-                    </div>
-                  )}
-                  <div className="col-span-3">
-                    <label className="block text-sm">Nome Fantasia</label>
-                    <input
-                      type="text"
-                      name="fanpes"
-                      value={form.fanpes}
-                      onChange={handleChange}
-                      className="w-full border px-3 py-2 rounded"
-                    />
-                  </div>
-                </div>
-              </section>
+                      <td className="px-6 py-4 text-sm text-slate-900">
+                        #{cadastro.codcad}
+                      </td>
+                      <td className="px-6 py-4 text-sm font-medium text-slate-900">
+                        {cadastro.nomcad}
+                      </td>
+                      <td className="px-6 py-4">
+                        <span
+                          className={`inline-flex px-3 py-1 text-xs font-medium rounded-full border ${getTipoColor(
+                            cadastro.tipocad
+                          )}`}
+                        >
+                          {getTipoLabel(cadastro.tipocad)}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-slate-600">
+                        {cadastro.doccad || "-"}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-slate-600">
+                        {cadastro.emacad || "-"}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-slate-600">
+                        {cadastro.telcad || "-"}
+                      </td>
+                      <td className="px-6 py-4">
+                        <span
+                          className={`inline-flex px-3 py-1 text-xs font-medium rounded-full border ${getStatusColor(
+                            cadastro.statcad
+                          )}`}
+                        >
+                          {getStatusLabel(cadastro.statcad)}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex gap-2 justify-center">
+                          <button
+                            onClick={() => openEditModal(cadastro)}
+                            className="px-3 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors text-sm"
+                            title="Editar"
+                          >
+                            ✏️ Editar
+                          </button>
+                          <button
+                            onClick={() => handleToggleStatus(cadastro)}
+                            className={`px-3 py-1 rounded hover:opacity-80 transition-colors text-sm ${
+                              cadastro.statcad === "ATIVO"
+                                ? "bg-orange-100 text-orange-700"
+                                : "bg-green-100 text-green-700"
+                            }`}
+                            title={
+                              cadastro.statcad === "ATIVO"
+                                ? "Inativar"
+                                : "Ativar"
+                            }
+                          >
+                            {cadastro.statcad === "ATIVO" ? "⏸️ Inativar" : "▶️ Ativar"}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
 
-              {/* 2ª fileira - Contato */}
-              <section className="border rounded-lg p-4">
-                <h4 className="font-medium mb-3">Contatos</h4>
-                <div className="grid grid-cols-3 gap-4">
-                  <div>
-                    <label className="block text-sm">E-mail</label>
-                    <input
-                      type="email"
-                      name="em1pes"
-                      value={form.em1pes}
-                      onChange={handleChange}
-                      className="w-full border px-3 py-2 rounded"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm">E-mail 2</label>
-                    <input
-                      type="email"
-                      name="em2pes"
-                      value={form.em2pes}
-                      onChange={handleChange}
-                      className="w-full border px-3 py-2 rounded"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm">Celular</label>
-                    <input
-                      type="text"
-                      name="celpes"
-                      value={form.celpes}
-                      onChange={handleChange}
-                      className="w-full border px-3 py-2 rounded"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm">Situação</label>
-                    <select
-                      name="sitpes"
-                      value={form.sitpes}
-                      onChange={handleChange}
-                      className="w-full border px-3 py-2 rounded"
-                    >
-                      <option value="">-</option>
-                      <option value="Ativo">Ativo</option>
-                      <option value="Inativo">Inativo</option>
-                    </select>
-                  </div>
-                </div>
-              </section>
+      {/* Modal de Criação/Edição */}
+      {showModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="sticky top-0 bg-gradient-to-r from-blue-600 to-blue-700 text-white px-6 py-4 flex justify-between items-center">
+              <h2 className="text-2xl font-bold">
+                {isEditing ? "Editar Cadastro" : "Novo Cadastro"}
+              </h2>
+              <button
+                onClick={() => {
+                  setShowModal(false);
+                  setIsEditing(false);
+                  setSelectedCadastro(null);
+                  resetForm();
+                }}
+                className="text-white hover:text-slate-200 text-2xl"
+              >
+                ×
+              </button>
+            </div>
 
-              {/* 3ª fileira - Endereço */}
-              <section className="border rounded-lg p-4">
-                <h4 className="font-medium mb-3">Endereço</h4>
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="col-span-2">
-                    <label className="block text-sm">Endereço</label>
-                    <input
-                      type="text"
-                      name="endpes"
-                      value={form.endpes}
-                      onChange={handleChange}
-                      className="w-full border px-3 py-2 rounded"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm">Número</label>
-                    <input
-                      type="text"
-                      name="numpes"
-                      value={form.numpes}
-                      onChange={handleChange}
-                      className="w-full border px-3 py-2 rounded"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm">Bairro</label>
-                    <input
-                      type="text"
-                      name="baipes"
-                      value={form.baipes}
-                      onChange={handleChange}
-                      className="w-full border px-3 py-2 rounded"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm">Cidade</label>
-                    <input
-                      type="text"
-                      name="cidpes"
-                      value={form.cidpes}
-                      onChange={handleChange}
-                      className="w-full border px-3 py-2 rounded"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm">Estado</label>
-                    <input
-                      type="text"
-                      name="estpes"
-                      value={form.estpes}
-                      onChange={handleChange}
-                      className="w-full border px-3 py-2 rounded"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm">CEP</label>
-                    <input
-                      type="text"
-                      name="ceppes"
-                      value={form.ceppes}
-                      onChange={handleChange}
-                      className="w-full border px-3 py-2 rounded"
-                    />
-                  </div>
+            <form
+              onSubmit={isEditing ? handleUpdate : handleCreate}
+              className="p-6"
+            >
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    Tipo de Cadastro *
+                  </label>
+                  <select
+                    required
+                    value={form.tipocad}
+                    onChange={(e) =>
+                      setForm({ ...form, tipocad: e.target.value })
+                    }
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="FORNECEDOR">Fornecedor</option>
+                    <option value="CLIENTE">Cliente</option>
+                    <option value="USUARIO">Usuário</option>
+                    <option value="OUTRO">Outro</option>
+                  </select>
                 </div>
-              </section>
 
-              {/* Footer */}
-              <div className="flex justify-end gap-2 pt-2">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    Status *
+                  </label>
+                  <select
+                    required
+                    value={form.statcad}
+                    onChange={(e) =>
+                      setForm({ ...form, statcad: e.target.value })
+                    }
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  >
+                    <option value="ATIVO">Ativo</option>
+                    <option value="INATIVO">Inativo</option>
+                  </select>
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    Nome *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={form.nomcad}
+                    onChange={(e) =>
+                      setForm({ ...form, nomcad: e.target.value })
+                    }
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="Nome completo"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    Documento (CPF/CNPJ)
+                  </label>
+                  <input
+                    type="text"
+                    value={form.doccad}
+                    onChange={(e) =>
+                      setForm({ ...form, doccad: e.target.value })
+                    }
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="000.000.000-00"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    Telefone
+                  </label>
+                  <input
+                    type="text"
+                    value={form.telcad}
+                    onChange={(e) =>
+                      setForm({ ...form, telcad: e.target.value })
+                    }
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="(00) 00000-0000"
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    E-mail
+                  </label>
+                  <input
+                    type="email"
+                    value={form.emacad}
+                    onChange={(e) =>
+                      setForm({ ...form, emacad: e.target.value })
+                    }
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="email@exemplo.com"
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    Endereço
+                  </label>
+                  <input
+                    type="text"
+                    value={form.endcad}
+                    onChange={(e) =>
+                      setForm({ ...form, endcad: e.target.value })
+                    }
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="Rua, número, bairro, cidade - UF"
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-sm font-medium text-slate-700 mb-2">
+                    Observações
+                  </label>
+                  <textarea
+                    value={form.obscad}
+                    onChange={(e) =>
+                      setForm({ ...form, obscad: e.target.value })
+                    }
+                    rows={3}
+                    className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="Observações adicionais..."
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-3 mt-6">
+                <button
+                  type="submit"
+                  className="flex-1 px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-lg hover:from-blue-700 hover:to-blue-800 transition-all font-medium"
+                >
+                  {isEditing ? "💾 Salvar Alterações" : "✓ Criar Cadastro"}
+                </button>
                 <button
                   type="button"
                   onClick={() => {
                     setShowModal(false);
+                    setIsEditing(false);
+                    setSelectedCadastro(null);
                     resetForm();
                   }}
-                  className="px-4 py-2 border rounded hover:bg-gray-100"
+                  className="px-6 py-3 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 transition-colors font-medium"
                 >
                   Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700"
-                >
-                  {isEditing ? "Salvar alterações" : "Salvar"}
                 </button>
               </div>
             </form>
@@ -553,6 +740,4 @@ const CadastrosPage: React.FC = () => {
       )}
     </div>
   );
-};
-
-export default CadastrosPage;
+}

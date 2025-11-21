@@ -1,0 +1,568 @@
+# app/routers/contas_pagar.py
+from typing import List, Optional
+from datetime import date, timedelta
+from fastapi import APIRouter, Depends, HTTPException, status, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, and_, or_, func
+from decimal import Decimal
+import uuid
+
+from app.database import get_db
+from app.models.user import User
+from app.models.contas_pagar import ContaPagar
+from app.models.pessoa import Pessoa
+from app.models.cadastro_geral import CadastroGeral
+from app.routers.auth import get_current_user
+from app.schemas.contas_pagar import (
+    ContaPagarCreate,
+    ContaPagarUpdate,
+    ContaPagarResponse,
+    ContaPagarResponseComNome,
+    ContaPagarBaixa,
+    ContaPagarParcelamento,
+    ContaPagarReparcelamento,
+    ContaPagarCancelamento,
+)
+
+router = APIRouter(prefix="/contas-pagar", tags=["Contas a Pagar"])
+
+
+def assert_same_tenant_conta(user: User, conta: ContaPagar):
+    """Valida se o usuário pertence ao mesmo tenant da conta"""
+    if user.issuper:
+        return
+    if user.codemp != conta.codemp or user.codfil != conta.codfil:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acesso negado: conta pertence a outro tenant"
+        )
+
+
+async def get_conta_or_404(
+    codcap: int,
+    db: AsyncSession,
+    current_user: User
+) -> ContaPagar:
+    """Busca conta a pagar ou retorna 404"""
+    query = select(ContaPagar).where(ContaPagar.codcap == codcap)
+    
+    # Se não for superadmin, filtra por tenant
+    if not current_user.issuper:
+        query = query.where(
+            and_(
+                ContaPagar.codemp == current_user.codemp,
+                ContaPagar.codfil == current_user.codfil
+            )
+        )
+    
+    result = await db.execute(query)
+    conta = result.scalar_one_or_none()
+    
+    if not conta:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conta a pagar não encontrada"
+        )
+    
+    return conta
+
+
+# ========== CRUD ==========
+
+@router.post("", response_model=ContaPagarResponse, status_code=status.HTTP_201_CREATED)
+async def create_conta_pagar(
+    payload: ContaPagarCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Criar nova conta a pagar"""
+    
+    # Valida se fornecedor existe e pertence ao tenant
+    query_fornecedor = select(Pessoa).where(Pessoa.codpes == payload.codfor)
+    if not current_user.issuper:
+        query_fornecedor = query_fornecedor.where(
+            and_(
+                Pessoa.codemp == current_user.codemp,
+                Pessoa.codfil == current_user.codfil
+            )
+        )
+    
+    result = await db.execute(query_fornecedor)
+    fornecedor = result.scalar_one_or_none()
+    
+    if not fornecedor:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Fornecedor não encontrado ou não pertence ao seu tenant"
+        )
+    
+    # Valida parcelas
+    if payload.numpar > payload.totpar:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Número da parcela não pode ser maior que o total de parcelas"
+        )
+    
+    # Cria conta
+    nova_conta = ContaPagar(
+        codfor=payload.codfor,
+        vlrcap=payload.vlrcap,
+        datven=payload.datven,
+        datpag=payload.datpag,
+        statcap=payload.statcap,
+        catcap=payload.catcap,
+        forpag=payload.forpag,
+        numpar=payload.numpar,
+        totpar=payload.totpar,
+        obscap=payload.obscap,
+        numdoc=payload.numdoc,
+        codemp=current_user.codemp,
+        codfil=current_user.codfil,
+        usucri=current_user.codusu,
+    )
+    
+    db.add(nova_conta)
+    await db.commit()
+    await db.refresh(nova_conta)
+    
+    return nova_conta
+
+
+@router.get("", response_model=List[ContaPagarResponseComNome])
+async def list_contas_pagar(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    codfor: Optional[int] = None,
+    statcap: Optional[str] = None,
+    catcap: Optional[str] = None,
+    datven_inicio: Optional[date] = None,
+    datven_fim: Optional[date] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Listar contas a pagar com filtros (inclui nome do fornecedor)"""
+    
+    # Query com join para pegar o nome do fornecedor
+    query = select(ContaPagar, Pessoa.nompes).join(
+        Pessoa, ContaPagar.codfor == Pessoa.codpes, isouter=True
+    )
+    
+    # Filtro de tenant (superadmin vê tudo)
+    if not current_user.issuper:
+        query = query.where(
+            and_(
+                ContaPagar.codemp == current_user.codemp,
+                ContaPagar.codfil == current_user.codfil
+            )
+        )
+    
+    # Filtros opcionais
+    if codfor:
+        query = query.where(ContaPagar.codfor == codfor)
+    
+    if statcap:
+        query = query.where(ContaPagar.statcap == statcap)
+    
+    if catcap:
+        query = query.where(ContaPagar.catcap == catcap)
+    
+    if datven_inicio:
+        query = query.where(ContaPagar.datven >= datven_inicio)
+    
+    if datven_fim:
+        query = query.where(ContaPagar.datven <= datven_fim)
+    
+    # Ordenação por vencimento
+    query = query.order_by(ContaPagar.datven.desc())
+    query = query.offset(skip).limit(limit)
+    
+    result = await db.execute(query)
+    rows = result.all()
+    
+    # Monta resposta com nome do fornecedor
+    contas_com_nome = []
+    for conta, nomfor in rows:
+        conta_dict = {
+            **{k: v for k, v in conta.__dict__.items() if not k.startswith('_')},
+            'nomfor': nomfor
+        }
+        contas_com_nome.append(ContaPagarResponseComNome(**conta_dict))
+    
+    return contas_com_nome
+
+
+@router.get("/{codcap}", response_model=ContaPagarResponse)
+async def get_conta_pagar(
+    codcap: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Obter uma conta a pagar específica"""
+    conta = await get_conta_or_404(codcap, db, current_user)
+    return conta
+
+
+@router.patch("/{codcap}", response_model=ContaPagarResponse)
+async def update_conta_pagar(
+    codcap: int,
+    payload: ContaPagarUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Atualizar conta a pagar"""
+    conta = await get_conta_or_404(codcap, db, current_user)
+    
+    # Valida se conta não está paga ou cancelada
+    if conta.statcap in ["PAGO", "CANCELADO"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Não é possível editar conta com status {conta.statcap}"
+        )
+    
+    # Atualiza campos
+    update_data = payload.model_dump(exclude_unset=True)
+    
+    for field, value in update_data.items():
+        setattr(conta, field, value)
+    
+    conta.usualt = current_user.codusu
+    
+    await db.commit()
+    await db.refresh(conta)
+    
+    return conta
+
+
+@router.delete("/{codcap}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conta_pagar(
+    codcap: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Deletar conta a pagar"""
+    conta = await get_conta_or_404(codcap, db, current_user)
+    
+    # Valida se conta não está paga
+    if conta.statcap == "PAGO":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Não é possível deletar conta já paga. Cancele-a se necessário."
+        )
+    
+    await db.delete(conta)
+    await db.commit()
+    
+    return None
+
+
+# ========== BAIXA DE TÍTULOS ==========
+
+@router.post("/{codcap}/baixar", response_model=ContaPagarResponse)
+async def baixar_conta_pagar(
+    codcap: int,
+    payload: ContaPagarBaixa,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Dar baixa em conta a pagar (marcar como pago)"""
+    conta = await get_conta_or_404(codcap, db, current_user)
+    
+    # Valida status
+    if conta.statcap == "PAGO":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Conta já está paga"
+        )
+    
+    if conta.statcap == "CANCELADO":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Não é possível dar baixa em conta cancelada"
+        )
+    
+    # Atualiza conta
+    conta.statcap = "PAGO"
+    conta.datpag = payload.datpag
+    
+    if payload.forpag:
+        conta.forpag = payload.forpag
+    
+    if payload.obscap:
+        obs_anterior = conta.obscap or ""
+        conta.obscap = f"{obs_anterior}\n[BAIXA] {payload.obscap}".strip()
+    
+    conta.usualt = current_user.codusu
+    
+    await db.commit()
+    await db.refresh(conta)
+    
+    return conta
+
+
+# ========== PARCELAMENTO ==========
+
+@router.post("/parcelar/{codfor}", response_model=List[ContaPagarResponse])
+async def parcelar_conta_pagar(
+    codfor: int,
+    payload: ContaPagarParcelamento,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Criar conta parcelada (gera múltiplas contas automaticamente)"""
+    
+    # Valida se fornecedor existe
+    query_fornecedor = select(Pessoa).where(Pessoa.codpes == codfor)
+    if not current_user.issuper:
+        query_fornecedor = query_fornecedor.where(
+            and_(
+                Pessoa.codemp == current_user.codemp,
+                Pessoa.codfil == current_user.codfil
+            )
+        )
+    
+    result = await db.execute(query_fornecedor)
+    fornecedor = result.scalar_one_or_none()
+    
+    if not fornecedor:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Fornecedor não encontrado ou não pertence ao seu tenant"
+        )
+    
+    if payload.totpar < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Parcelamento requer no mínimo 2 parcelas"
+        )
+    
+    # Gera código único para o grupo de parcelamento
+    codigo_grupo = str(uuid.uuid4())
+    
+    # Calcula valor de cada parcela
+    vlr_parcela = payload.vlrcap / payload.totpar
+    
+    contas_criadas = []
+    
+    for num_parcela in range(1, payload.totpar + 1):
+        # Calcula data de vencimento da parcela
+        dias_adicionar = (num_parcela - 1) * payload.intervalo_dias
+        datven_parcela = payload.datven_primeira + timedelta(days=dias_adicionar)
+        
+        # Cria a parcela
+        nova_conta = ContaPagar(
+            codfor=codfor,
+            vlrcap=vlr_parcela,
+            datven=datven_parcela,
+            statcap="A_PAGAR",
+            catcap=payload.catcap,
+            forpag=payload.forpag,
+            numpar=num_parcela,
+            totpar=payload.totpar,
+            codgrp=codigo_grupo,
+            obscap=payload.obscap,
+            numdoc=payload.numdoc,
+            codemp=current_user.codemp,
+            codfil=current_user.codfil,
+            usucri=current_user.codusu,
+        )
+        
+        db.add(nova_conta)
+        contas_criadas.append(nova_conta)
+    
+    await db.commit()
+    
+    # Refresh todas as contas
+    for conta in contas_criadas:
+        await db.refresh(conta)
+    
+    return contas_criadas
+
+
+@router.get("/grupo/{codgrp}", response_model=List[ContaPagarResponseComNome])
+async def list_parcelas_grupo(
+    codgrp: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Listar todas as parcelas de um grupo de parcelamento"""
+    
+    # Query com join para pegar o nome do fornecedor
+    query = select(ContaPagar, Pessoa.nompes).join(
+        Pessoa, ContaPagar.codfor == Pessoa.codpes, isouter=True
+    ).where(ContaPagar.codgrp == codgrp)
+    
+    # Filtro de tenant
+    if not current_user.issuper:
+        query = query.where(
+            and_(
+                ContaPagar.codemp == current_user.codemp,
+                ContaPagar.codfil == current_user.codfil
+            )
+        )
+    
+    # Ordenação por número de parcela
+    query = query.order_by(ContaPagar.numpar)
+    
+    result = await db.execute(query)
+    rows = result.all()
+    
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Grupo de parcelamento não encontrado"
+        )
+    
+    # Monta resposta com nome do fornecedor
+    parcelas_com_nome = []
+    for conta, nomfor in rows:
+        conta_dict = {
+            **{k: v for k, v in conta.__dict__.items() if not k.startswith('_')},
+            'nomfor': nomfor
+        }
+        parcelas_com_nome.append(ContaPagarResponseComNome(**conta_dict))
+    
+    return parcelas_com_nome
+
+
+@router.post("/{codcap}/reparcelar", response_model=List[ContaPagarResponse])
+async def reparcelar_conta_pagar(
+    codcap: int,
+    payload: ContaPagarReparcelamento,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Reparcelar conta existente"""
+    conta_original = await get_conta_or_404(codcap, db, current_user)
+    
+    # Valida status
+    if conta_original.statcap in ["PAGO", "CANCELADO"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Não é possível reparcelar conta com status {conta_original.statcap}"
+        )
+    
+    if payload.totpar_novo < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reparcelamento requer no mínimo 2 parcelas"
+        )
+    
+    # Cancela conta original
+    conta_original.statcap = "CANCELADO"
+    conta_original.obscap = f"{conta_original.obscap or ''}\n[REPARCELADO]".strip()
+    conta_original.usualt = current_user.codusu
+    
+    # Calcula valor de cada nova parcela
+    vlr_parcela = conta_original.vlrcap / payload.totpar_novo
+    
+    contas_criadas = []
+    
+    for num_parcela in range(1, payload.totpar_novo + 1):
+        # Calcula data de vencimento da parcela
+        dias_adicionar = (num_parcela - 1) * payload.intervalo_dias
+        datven_parcela = payload.datven_primeira + timedelta(days=dias_adicionar)
+        
+        # Cria a nova parcela
+        nova_conta = ContaPagar(
+            codfor=conta_original.codfor,
+            vlrcap=vlr_parcela,
+            datven=datven_parcela,
+            statcap="A_PAGAR",
+            catcap=conta_original.catcap,
+            forpag=conta_original.forpag,
+            numpar=num_parcela,
+            totpar=payload.totpar_novo,
+            obscap=f"Reparcelamento de #{codcap}. {payload.obscap or ''}".strip(),
+            numdoc=conta_original.numdoc,
+            codemp=current_user.codemp,
+            codfil=current_user.codfil,
+            usucri=current_user.codusu,
+        )
+        
+        db.add(nova_conta)
+        contas_criadas.append(nova_conta)
+    
+    await db.commit()
+    
+    # Refresh todas as contas
+    for conta in contas_criadas:
+        await db.refresh(conta)
+    
+    return contas_criadas
+
+
+# ========== CANCELAMENTO ==========
+
+@router.post("/{codcap}/cancelar", response_model=ContaPagarResponse)
+async def cancelar_conta_pagar(
+    codcap: int,
+    payload: ContaPagarCancelamento,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Cancelar conta a pagar"""
+    conta = await get_conta_or_404(codcap, db, current_user)
+    
+    # Valida status
+    if conta.statcap == "PAGO":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Não é possível cancelar conta já paga"
+        )
+    
+    if conta.statcap == "CANCELADO":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Conta já está cancelada"
+        )
+    
+    # Cancela conta
+    conta.statcap = "CANCELADO"
+    obs_anterior = conta.obscap or ""
+    conta.obscap = f"{obs_anterior}\n[CANCELADO] {payload.motivo}".strip()
+    conta.usualt = current_user.codusu
+    
+    await db.commit()
+    await db.refresh(conta)
+    
+    return conta
+
+
+# ========== ATUALIZAÇÃO DE STATUS (Automático para vencidas) ==========
+
+@router.post("/atualizar-vencidas", response_model=dict)
+async def atualizar_contas_vencidas(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Atualiza status de contas vencidas (A_PAGAR -> VENCIDO)"""
+    
+    hoje = date.today()
+    
+    query = select(ContaPagar).where(
+        and_(
+            ContaPagar.statcap == "A_PAGAR",
+            ContaPagar.datven < hoje
+        )
+    )
+    
+    # Filtro de tenant
+    if not current_user.issuper:
+        query = query.where(
+            and_(
+                ContaPagar.codemp == current_user.codemp,
+                ContaPagar.codfil == current_user.codfil
+            )
+        )
+    
+    result = await db.execute(query)
+    contas_vencidas = result.scalars().all()
+    
+    count = 0
+    for conta in contas_vencidas:
+        conta.statcap = "VENCIDO"
+        count += 1
+    
+    await db.commit()
+    
+    return {"message": f"{count} contas atualizadas para VENCIDO"}

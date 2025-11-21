@@ -140,3 +140,14 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
         "issuper": current_user.issuper,
         "isadmin": current_user.isadmin
     }
+
+
+# 🔑 Função para validar se o usuário é SuperAdmin
+async def require_superadmin(current_user: User = Depends(get_current_user)) -> User:
+    """Valida se o usuário é SuperAdmin"""
+    if not current_user.issuper:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acesso negado: apenas SuperAdmin pode realizar esta ação"
+        )
+    return current_user
